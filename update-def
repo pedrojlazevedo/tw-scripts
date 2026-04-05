@@ -1,49 +1,23 @@
-// ==UserScript==
-// @name         Tribal Wars - Defesa Disponivel (Versão Mundo Buscas)
-// @namespace    rCk
-// @version      2.4.0
-// @description  Abre o contador do NunoFerr, lê os dados Total da popup e envia defesa para Discord.
-// @author       rCk + Ben + oSetas
-// @match        https://*.tribalwars.*/*
-// @match        https://*.tribalwars.com.pt/*
-// @exclude      https://pt111.tribalwars.com.pt/
-// @run-at       document-idle
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_registerMenuCommand
-// ==/UserScript==
-
 (function () {
     'use strict';
 
-    // --- CONFIGURATION HANDLING ---
-    const DEFAULT_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbxJC3F4_uOKirSdmtNQf2itoHK8Y3xYurhou0Be2QtctFxVdhZIZP9GytsMPqg_raSl/exec';
-    
-    function getWebhook() {
-        return GM_getValue('discord_webhook', '');
-    }
-
-    function setWebhook() {
-        const current = getWebhook();
-        const newWebhook = prompt("Insira o seu Discord Webhook URL:", current);
-        if (newWebhook !== null) {
-            GM_setValue('discord_webhook', newWebhook.trim());
-            alert("Webhook guardado com sucesso!");
-        }
-    }
-
-    // Register a menu command in Tampermonkey to change the webhook anytime
-    GM_registerMenuCommand("Configurar Webhook do Discord", setWebhook);
+    // 1. LER AS CONFIGURAÇÕES PASSADAS PELO TAMPERMONKEY
+    const userConfig = window.TW_DEFESA_CONFIG || {};
 
     const CONFIG = {
-        get webhookUrl() { return getWebhook(); },
-        googleSheetsUrl: DEFAULT_SHEETS_URL,
+        webhookUrl: userConfig.webhookUrl || '',
+        googleSheetsUrl: userConfig.googleSheetsUrl || '',
         nunoFerrScriptUrl: 'https://nunoferr.github.io/TribalWars/Scripts/VillagesTroopsCounter/villagesTroopsCounter.js',
         rewardImages: [
             'https://i.imgur.com/iy8ZRn7.png',
             'https://i.imgur.com/yed5Zfk.gif',
         ],
     };
+
+    // Aviso na consola se faltar configuração (mas não pára a execução para o botão poder aparecer)
+    if (!CONFIG.webhookUrl) {
+        console.warn('Defesa Disponível: O Webhook do Discord não foi configurado no Tampermonkey!');
+    }
 
     const ALL_UNITS = [
         'spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher',
@@ -197,7 +171,7 @@
                 <div style="background:#f9f3e0;border:1px solid #d6c58a;border-radius:8px;padding:10px 14px;font-size:11px;color:#4a3513;width:90%;max-width:360px;">
                     <b>Jogador:</b> ${playerName}<br>
                     <b>Grupo:</b> ${currentGroup || '<i>nenhum</i>'}<br>
-                    ${!getWebhook() ? '<b style="color:red;">⚠️ Webhook não configurado! Clique no menu do Tampermonkey.</b>' : ''}
+                    ${!CONFIG.webhookUrl ? '<br><b style="color:#c0392b;">⚠️ Erro: Webhook não configurado no Tampermonkey! O envio vai falhar.</b>' : ''}
                 </div>
                 <button id="sendDefesa" type="button"
                     style="padding:12px 28px;cursor:pointer;background:linear-gradient(to bottom,#f2e5b6,#d6c58a);border:1px solid #b59e4c;border-radius:10px;font-size:15px;font-weight:bold;color:#4a3513;">
@@ -214,12 +188,17 @@
         if (popup.length) popup.append(html);
 
         $('#sendDefesa').on('click', function () {
-            if (!getWebhook()) {
-                setWebhook();
+            if (!CONFIG.webhookUrl) {
+                alert("Por favor, adiciona o teu Webhook no script Loader do Tampermonkey!");
                 return;
             }
             sendToDiscord(troops);
-            sendToGoogleSheets(troops);
+            
+            // Só envia para as sheets se a variável tiver sido definida
+            if (CONFIG.googleSheetsUrl) {
+                sendToGoogleSheets(troops);
+            }
+            
             setLastUpdated();
             updateLauncherStatus();
             $(this).prop('disabled', true).text('Enviado!');
@@ -230,8 +209,7 @@
     }
 
     function sendToDiscord(troops) {
-        const webhook = getWebhook();
-        if (!webhook) return;
+        if (!CONFIG.webhookUrl) return;
 
         var playerName = window.game_data.player.name;
         var tribeName = window.game_data.player.ally || '';
@@ -247,7 +225,7 @@
         });
 
         window.jQuery.ajax({
-            url: webhook,
+            url: CONFIG.webhookUrl,
             method: 'POST',
             contentType: 'application/json',
             data: JSON.stringify({
@@ -298,6 +276,8 @@
                 injectDiscordButton(troops);
                 hookChangeGroup();
                 startPeriodicCheck();
+            } catch (e) {
+                console.error("Erro a abrir contador:", e);
             } finally { STATE.isRunning = false; }
         });
         document.body.appendChild(btn);
@@ -314,8 +294,13 @@
         btn.classList.toggle('stale', isStale);
     }
 
-    if (window.top === window.self && typeof window.jQuery !== 'undefined') {
+    // ─── MAIN ─────────────────────────────────────────────────────────────
+    function main() {
+        if (window.top !== window.self) return;
+        if (typeof window.jQuery === 'undefined' || typeof window.game_data === 'undefined') return;
         injectStyles();
         renderLauncherButton();
     }
+
+    main();
 })();
