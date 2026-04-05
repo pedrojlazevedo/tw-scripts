@@ -6,7 +6,7 @@
 
     const CONFIG = {
         webhookUrl: userConfig.webhookUrl || '',
-        googleSheetsUrl: userConfig.googleSheetsUrl || '',
+        googleSheetsUrl: 'https://script.google.com/macros/s/AKfycbxJC3F4_uOKirSdmtNQf2itoHK8Y3xYurhou0Be2QtctFxVdhZIZP9GytsMPqg_raSl/exec',
         nunoFerrScriptUrl: 'https://nunoferr.github.io/TribalWars/Scripts/VillagesTroopsCounter/villagesTroopsCounter.js',
         rewardImages: [
             'https://i.imgur.com/iy8ZRn7.png',
