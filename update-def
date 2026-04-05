@@ -1,0 +1,321 @@
+// ==UserScript==
+// @name         Tribal Wars - Defesa Disponivel (Versão Mundo Buscas)
+// @namespace    rCk
+// @version      2.4.0
+// @description  Abre o contador do NunoFerr, lê os dados Total da popup e envia defesa para Discord.
+// @author       rCk + Ben + oSetas
+// @match        https://*.tribalwars.*/*
+// @match        https://*.tribalwars.com.pt/*
+// @exclude      https://pt111.tribalwars.com.pt/
+// @run-at       document-idle
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_registerMenuCommand
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // --- CONFIGURATION HANDLING ---
+    const DEFAULT_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbxJC3F4_uOKirSdmtNQf2itoHK8Y3xYurhou0Be2QtctFxVdhZIZP9GytsMPqg_raSl/exec';
+    
+    function getWebhook() {
+        return GM_getValue('discord_webhook', '');
+    }
+
+    function setWebhook() {
+        const current = getWebhook();
+        const newWebhook = prompt("Insira o seu Discord Webhook URL:", current);
+        if (newWebhook !== null) {
+            GM_setValue('discord_webhook', newWebhook.trim());
+            alert("Webhook guardado com sucesso!");
+        }
+    }
+
+    // Register a menu command in Tampermonkey to change the webhook anytime
+    GM_registerMenuCommand("Configurar Webhook do Discord", setWebhook);
+
+    const CONFIG = {
+        get webhookUrl() { return getWebhook(); },
+        googleSheetsUrl: DEFAULT_SHEETS_URL,
+        nunoFerrScriptUrl: 'https://nunoferr.github.io/TribalWars/Scripts/VillagesTroopsCounter/villagesTroopsCounter.js',
+        rewardImages: [
+            'https://i.imgur.com/iy8ZRn7.png',
+            'https://i.imgur.com/yed5Zfk.gif',
+        ],
+    };
+
+    const ALL_UNITS = [
+        'spear', 'sword', 'axe', 'archer', 'spy', 'light', 'marcher',
+        'heavy', 'ram', 'catapult', 'snob'
+    ];
+
+    const STATE = { isRunning: false, hooked: false, checkInterval: null };
+    var STALE_THRESHOLD_MS = 48 * 60 * 60 * 1000; // 48h
+
+    // ─── COOKIES & STORAGE ────────────────────────────────────────────────
+
+    function setCookie(name, value, days) {
+        var d = new Date();
+        d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
+        document.cookie = name + '=' + encodeURIComponent(value) + ';expires=' + d.toUTCString() + ';path=/';
+    }
+
+    function getCookie(name) {
+        var match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    function getLastUpdated() {
+        var val = getCookie('defesa_lastUpdated');
+        return val ? parseInt(val, 10) : null;
+    }
+
+    function setLastUpdated() {
+        setCookie('defesa_lastUpdated', String(Date.now()), 90);
+    }
+
+    function getStaleMessage(lastUpdated, now) {
+        if (!lastUpdated) return 'Nunca enviaste a tua defesa.';
+        var diffMs = now - lastUpdated;
+        if (diffMs < 0) return 'Atualizado agora';
+        var diffH = Math.floor(diffMs / (1000 * 60 * 60));
+        var diffD = Math.floor(diffH / 24);
+        if (diffMs >= STALE_THRESHOLD_MS) {
+            if (diffD >= 2) return 'Defesa desatualizada (' + diffD + ' dias)!';
+            return 'Defesa desatualizada (' + diffH + 'h)!';
+        }
+        if (diffH < 1) return 'Atualizado agora';
+        if (diffH === 1) return 'Atualizado há 1h';
+        return 'Atualizado há ' + diffH + 'h';
+    }
+
+    // ─── HELPERS ──────────────────────────────────────────────────────────
+
+    function loadScript(src) {
+        return new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.async = true;
+            s.onload = resolve;
+            s.onerror = () => reject(new Error(`Falha a carregar: ${src}`));
+            document.head.appendChild(s);
+        });
+    }
+
+    function getCurrentGroupName() {
+        const popupSelect = window.jQuery('#popup_box_import select option:selected');
+        if (popupSelect.length) return popupSelect.text().trim();
+        return window.jQuery('strong.group-menu-item').text().trim();
+    }
+
+    function waitForPopupTable(timeoutMs = 60000) {
+        return new Promise((resolve, reject) => {
+            const start = Date.now();
+            const interval = setInterval(() => {
+                const table = document.querySelector('#popup_box_import #support_sum');
+                if (table) {
+                    clearInterval(interval);
+                    resolve(table);
+                    return;
+                }
+                if (Date.now() - start > timeoutMs) {
+                    clearInterval(interval);
+                    reject(new Error('Timeout: a popup do contador não apareceu.'));
+                }
+            }, 500);
+        });
+    }
+
+    function scrapeTroopsFromTable(table) {
+        const $ = window.jQuery;
+        const unitKeys = [];
+        $(table).find('thead th a[data-unit]').each(function () {
+            unitKeys.push($(this).attr('data-unit'));
+        });
+        const totalRow = $(table).find('tbody tr').last();
+        const troops = {};
+        $(totalRow).find('td[data-unit]').each(function () {
+            const unit = $(this).attr('data-unit');
+            const value = parseInt($(this).text().trim().replace(/\./g, '').replace(/,/g, ''), 10) || 0;
+            troops[unit] = value;
+        });
+        if (Object.keys(troops).length === 0) {
+            const tds = $(totalRow).find('td');
+            unitKeys.forEach((unit, i) => {
+                troops[unit] = parseInt($(tds[i + 1]).text().trim().replace(/\./g, '').replace(/,/g, ''), 10) || 0;
+            });
+        }
+        return troops;
+    }
+
+    function scrapeAndInjectDiscord() {
+        const table = document.querySelector('#popup_box_import #support_sum');
+        if (!table) return;
+        try {
+            const troops = scrapeTroopsFromTable(table);
+            injectDiscordButton(troops);
+        } catch (err) {
+            console.error('Erro ao re-injetar:', err);
+        }
+    }
+
+    function hookChangeGroup() {
+        if (STATE.hooked || typeof window.villagesTroopsCounter === 'undefined') return;
+        const original = window.villagesTroopsCounter.changeGroup.bind(window.villagesTroopsCounter);
+        window.villagesTroopsCounter.changeGroup = function (obj) {
+            original(obj);
+            setTimeout(scrapeAndInjectDiscord, 800);
+        };
+        STATE.hooked = true;
+    }
+
+    function startPeriodicCheck() {
+        if (STATE.checkInterval) return;
+        STATE.checkInterval = setInterval(() => {
+            const popup = document.querySelector('#popup_box_import');
+            if (!popup) {
+                clearInterval(STATE.checkInterval);
+                STATE.checkInterval = null;
+                return;
+            }
+            const table = popup.querySelector('#support_sum');
+            const discordBtn = popup.querySelector('.discord-button-row');
+            if (table && !discordBtn) scrapeAndInjectDiscord();
+        }, 1500);
+    }
+
+    function injectDiscordButton(troops) {
+        const $ = window.jQuery;
+        $('.discord-button-row').remove();
+        const currentGroup = getCurrentGroupName();
+        const playerName = window.game_data.player.name;
+        const tribeName = window.game_data.player.ally || '(sem tribo)';
+
+        const html = `
+            <div class="discord-button-row" style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:14px auto;">
+                <div style="background:#f9f3e0;border:1px solid #d6c58a;border-radius:8px;padding:10px 14px;font-size:11px;color:#4a3513;width:90%;max-width:360px;">
+                    <b>Jogador:</b> ${playerName}<br>
+                    <b>Grupo:</b> ${currentGroup || '<i>nenhum</i>'}<br>
+                    ${!getWebhook() ? '<b style="color:red;">⚠️ Webhook não configurado! Clique no menu do Tampermonkey.</b>' : ''}
+                </div>
+                <button id="sendDefesa" type="button"
+                    style="padding:12px 28px;cursor:pointer;background:linear-gradient(to bottom,#f2e5b6,#d6c58a);border:1px solid #b59e4c;border-radius:10px;font-size:15px;font-weight:bold;color:#4a3513;">
+                    Partilhar Defesa
+                </button>
+                <div id="defesaReward" style="display:none;text-align:center;">
+                    <div style="font-size:13px;font-weight:bold;color:#27ae60;margin-bottom:8px;">Enviado com sucesso!</div>
+                    <img id="defesaRewardImg" src="" style="max-width:200px;border-radius:10px;">
+                </div>
+            </div>
+        `;
+
+        const popup = $('#popup_box_import .popup_box_content');
+        if (popup.length) popup.append(html);
+
+        $('#sendDefesa').on('click', function () {
+            if (!getWebhook()) {
+                setWebhook();
+                return;
+            }
+            sendToDiscord(troops);
+            sendToGoogleSheets(troops);
+            setLastUpdated();
+            updateLauncherStatus();
+            $(this).prop('disabled', true).text('Enviado!');
+            var img = CONFIG.rewardImages[Math.floor(Math.random() * CONFIG.rewardImages.length)];
+            $('#defesaRewardImg').attr('src', img);
+            $('#defesaReward').fadeIn(400);
+        });
+    }
+
+    function sendToDiscord(troops) {
+        const webhook = getWebhook();
+        if (!webhook) return;
+
+        var playerName = window.game_data.player.name;
+        var tribeName = window.game_data.player.ally || '';
+        var currentGroup = getCurrentGroupName();
+        
+        var fields = [
+            { name: 'Tribo', value: tribeName || '-', inline: true },
+            { name: 'Grupo', value: currentGroup || '-', inline: true }
+        ];
+        
+        ALL_UNITS.forEach(u => {
+            if(troops[u]) fields.push({ name: u, value: String(troops[u]), inline: true });
+        });
+
+        window.jQuery.ajax({
+            url: webhook,
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                content: `**Defesa Atualizada: ${playerName}**`,
+                embeds: [{ title: 'Tropas Disponíveis', fields: fields, color: 3066993 }]
+            })
+        });
+    }
+
+    function sendToGoogleSheets(troops) {
+        var payload = {
+            playerName: window.game_data.player.name,
+            groupName: getCurrentGroupName(),
+            tribeName: window.game_data.player.ally || '',
+            troops: troops
+        };
+        fetch(CONFIG.googleSheetsUrl, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+    }
+
+    function injectStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            #tmDefesaLauncher {
+                position: fixed; right: 18px; bottom: 18px; z-index: 99999;
+                padding: 14px 20px; background: #f6e8bc; border: 1px solid #8b6a2c; border-radius: 14px;
+                color: #4a3513; font-weight: bold; cursor: pointer;
+            }
+            #tmDefesaLauncher.stale { border-color: #c0392b; animation: defesaPulse 2.5s infinite; }
+            @keyframes defesaPulse { 50% { box-shadow: 0 0 18px 4px rgba(192,57,43,0.45); } }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function renderLauncherButton() {
+        if (document.getElementById('tmDefesaLauncher')) return;
+        const btn = document.createElement('button');
+        btn.id = 'tmDefesaLauncher';
+        btn.innerHTML = '🛡️ <span id="tmDefesaLabel">Abrir Defesa</span><br><small id="tmDefesaStatus"></small>';
+        btn.addEventListener('click', async () => {
+            if (STATE.isRunning) return;
+            STATE.isRunning = true;
+            try {
+                if (typeof window.villagesTroopsCounter === 'undefined') {
+                    await loadScript(CONFIG.nunoFerrScriptUrl);
+                } else { window.villagesTroopsCounter.init(); }
+                const table = await waitForPopupTable();
+                const troops = scrapeTroopsFromTable(table);
+                injectDiscordButton(troops);
+                hookChangeGroup();
+                startPeriodicCheck();
+            } finally { STATE.isRunning = false; }
+        });
+        document.body.appendChild(btn);
+        updateLauncherStatus();
+    }
+
+    function updateLauncherStatus() {
+        const btn = document.getElementById('tmDefesaLauncher');
+        const status = document.getElementById('tmDefesaStatus');
+        if (!btn || !status) return;
+        const lastUpdated = getLastUpdated();
+        const isStale = !lastUpdated || (Date.now() - lastUpdated) >= STALE_THRESHOLD_MS;
+        status.textContent = getStaleMessage(lastUpdated, Date.now());
+        btn.classList.toggle('stale', isStale);
+    }
+
+    if (window.top === window.self && typeof window.jQuery !== 'undefined') {
+        injectStyles();
+        renderLauncherButton();
+    }
+})();
