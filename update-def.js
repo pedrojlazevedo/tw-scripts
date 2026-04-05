@@ -290,24 +290,26 @@
     }
 
     function buildDiscordPayload(troops, playerName, groupName, tribeName) {
+        // Ícones Corrigidos: Substituídos os IDs '0' por emojis universais
         var unitLabels = {
             spear:    { emoji: '<:lanceiro:1368839513891409972>',   name: 'Lanceiros' },
             sword:    { emoji: '<:espadachim:1368839514746785844>', name: 'Espadachins' },
-            axe:      { emoji: '<:machado:0>',                     name: 'Guerreiros com Machado' },
-            archer:   { emoji: '<:arqueiro:0>',                    name: 'Arqueiros' },
+            axe:      { emoji: '🪓',                                name: 'Guerreiros com Machado' },
+            archer:   { emoji: '🏹',                                name: 'Arqueiros' },
             spy:      { emoji: '<:batedor:1368839512423137404>',   name: 'Batedores' },
-            light:    { emoji: '<:leve:0>',                        name: 'Cavalaria Leve' },
-            marcher:  { emoji: '<:arqueiro_cavalo:0>',             name: 'Arqueiros a Cavalo' },
+            light:    { emoji: '🐎',                                name: 'Cavalaria Leve' },
+            marcher:  { emoji: '🏇',                                name: 'Arqueiros a Cavalo' },
             heavy:    { emoji: '<:pesada:1368839517997498398>',    name: 'Cavalaria Pesada' },
-            ram:      { emoji: '<:ariete:0>',                      name: 'Arietes' },
+            ram:      { emoji: '🪵',                                name: 'Arietes' },
             catapult: { emoji: '<:catapulta:1368839516441280573>',  name: 'Catapultas' },
-            snob:     { emoji: '<:nobre:0>',                       name: 'Nobres' },
+            snob:     { emoji: '👑',                                name: 'Nobres' },
         };
 
         var fields = [
             { name: '\u{1F3F0} **Tribo**', value: tribeName || '-', inline: false },
             { name: '\u{1F5C2}\uFE0F **Grupo Atual**', value: groupName || '-', inline: false },
         ];
+        
         for (var i = 0; i < ALL_UNITS.length; i++) {
             var u = ALL_UNITS[i];
             var label = unitLabels[u];
@@ -322,6 +324,7 @@
             content: '**Tropas (Atualizado por:** ' + playerName + '**)**',
             embeds: [{
                 title: '**\u{1F6E1}\uFE0F TROPAS**',
+                color: 13948116, // Adiciona uma cor ao painel do Discord
                 fields: fields,
             }],
         };
