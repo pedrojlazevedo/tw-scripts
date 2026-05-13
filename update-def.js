@@ -11,6 +11,8 @@
         rewardImages: [
             'https://i.imgur.com/iy8ZRn7.png',
             'https://i.imgur.com/yed5Zfk.gif',
+            'https://cdn.boob.bot/ass/4FCE.GIF',
+            'https://cdn.boob.bot/boobs/80003BF0.gif',            
         ],
     };
 
